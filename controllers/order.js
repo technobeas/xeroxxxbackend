@@ -582,6 +582,77 @@ async function handleOrdersWithBalanceByCustomer(req, res) {
     res.status(500).json({ success: false, error: err.message });
   }
 }
+// async function handleCustomerBulkPay(req, res) {
+//   try {
+//     const { customerId, amount } = req.body;
+
+//     if (!customerId || !amount || amount <= 0) {
+//       return res
+//         .status(400)
+//         .json({ success: false, error: "Invalid parameters" });
+//     }
+
+//     let remaining = amount;
+
+//     const orders = await Order.find({
+//       customer: customerId,
+//       balanceAmount: { $gt: 0 },
+//       status: { $ne: "paid" },
+//     }).sort({ createdAt: 1 });
+
+//     for (const order of orders) {
+//       if (remaining <= 0) break;
+
+//       const payable = order.balanceAmount; // original balance
+//       const paidNow = Math.min(payable, remaining);
+
+//       order.paidAmount += paidNow;
+//       order.balanceAmount -= paidNow;
+
+//       order.status = order.balanceAmount <= 0 ? "paid" : "partial";
+
+//       await order.save();
+
+//       await Payment.create({
+//         order: order._id,
+//         customer: customerId,
+//         amount: paidNow,
+//         paymentMode: "cash",
+//       });
+
+//       await Revenue.create({
+//         source: "order",
+//         order: order._id,
+//         amount: paidNow,
+//       });
+
+//       remaining -= paidNow; // reduce AFTER creating records
+//     }
+
+//     const totalBalance = await Order.aggregate([
+//       {
+//         $match: {
+//           customer: new mongoose.Types.ObjectId(customerId),
+//         },
+//       },
+//       {
+//         $group: {
+//           _id: null,
+//           total: { $sum: "$balanceAmount" },
+//         },
+//       },
+//     ]);
+
+//     res.json({
+//       success: true,
+//       newBalance: totalBalance[0]?.total || 0,
+//     });
+//   } catch (err) {
+//     console.error("BULK PAY ERROR:", err);
+//     res.status(500).json({ success: false, error: err.message });
+//   }
+// }
+
 async function handleCustomerBulkPay(req, res) {
   try {
     const { customerId, amount } = req.body;
@@ -592,7 +663,15 @@ async function handleCustomerBulkPay(req, res) {
         .json({ success: false, error: "Invalid parameters" });
     }
 
-    let remaining = amount;
+    const customer = await Customer.findById(customerId);
+
+    if (!customer) {
+      return res
+        .status(404)
+        .json({ success: false, error: "Customer not found" });
+    }
+
+    let remaining = Number(amount);
 
     const orders = await Order.find({
       customer: customerId,
@@ -600,58 +679,10 @@ async function handleCustomerBulkPay(req, res) {
       status: { $ne: "paid" },
     }).sort({ createdAt: 1 });
 
-    // for (const order of orders) {
-    //   if (remaining <= 0) break;
-
-    //   if (order.balanceAmount <= remaining) {
-    //     remaining -= order.balanceAmount;
-    //     order.paidAmount += order.balanceAmount;
-    //     order.balanceAmount = 0;
-    //     order.status = "paid";
-    //   } else {
-    //     order.paidAmount += remaining;
-    //     order.balanceAmount -= remaining;
-    //     order.status = "partial";
-    //     remaining = 0;
-    //   }
-
-    //   await order.save();
-
-    //   // await Payment.create({
-    //   //   order: order._id,
-    //   //   customer: customerId,
-    //   //   amount,
-    //   //   paymentMode: "cash",
-    //   // });
-
-    //   // await Revenue.create({
-    //   //   source: "order",
-    //   //   order: order._id,
-    //   //   amount,
-    //   // });
-
-    //   const paidNow =
-    //     order.balanceAmount <= remaining ? order.balanceAmount : remaining;
-
-    //   await Payment.create({
-    //     order: order._id,
-    //     customer: customerId,
-    //     amount: paidNow,
-    //     paymentMode: "cash",
-    //   });
-
-    //   await Revenue.create({
-    //     source: "order",
-    //     order: order._id,
-    //     amount: paidNow,
-    //   });
-    // }
-
     for (const order of orders) {
       if (remaining <= 0) break;
 
-      const payable = order.balanceAmount; // original balance
-      const paidNow = Math.min(payable, remaining);
+      const paidNow = Math.min(order.balanceAmount, remaining);
 
       order.paidAmount += paidNow;
       order.balanceAmount -= paidNow;
@@ -673,7 +704,13 @@ async function handleCustomerBulkPay(req, res) {
         amount: paidNow,
       });
 
-      remaining -= paidNow; // reduce AFTER creating records
+      remaining -= paidNow;
+    }
+
+    // ✅ Extra money goes to wallet
+    if (remaining > 0) {
+      customer.walletBalance += remaining;
+      await customer.save();
     }
 
     const totalBalance = await Order.aggregate([
@@ -693,10 +730,15 @@ async function handleCustomerBulkPay(req, res) {
     res.json({
       success: true,
       newBalance: totalBalance[0]?.total || 0,
+      walletAdded: remaining,
+      walletBalance: customer.walletBalance,
     });
   } catch (err) {
     console.error("BULK PAY ERROR:", err);
-    res.status(500).json({ success: false, error: err.message });
+    res.status(500).json({
+      success: false,
+      error: err.message,
+    });
   }
 }
 
@@ -735,23 +777,28 @@ async function handleDeleteOrder(req, res) {
     if (action === "1") {
       // ✅ ADD TO WALLET
       customer.walletBalance += order.paidAmount;
+      // customer.walletBalance -= order.walletAdded;
+
+      await Revenue.deleteMany({ order: order._id }).session(session);
     } else if (action === "2") {
       // ✅ REFUND (REMOVE FROM REVENUE)
       // no wallet change
+      // customer.walletBalance -= order.walletAdded;
       await Revenue.deleteMany({ order: order._id }).session(session);
     } else if (action === "3") {
       // ✅ DO NOTHING
       // no wallet change
+      // customer.walletBalance -= order.walletAdded;
     }
 
     // remove advance always
-    if (order.walletAdded > 0) {
-      customer.walletBalance -= order.walletAdded;
-    }
+    // if (order.walletAdded > 0) {
+    //   customer.walletBalance -= order.walletAdded;
+    // }
 
-    if (customer.walletBalance < 0) {
-      customer.walletBalance = 0;
-    }
+    // if (customer.walletBalance < 0) {
+    //   customer.walletBalance = 0;
+    // }
 
     await customer.save({ session });
 
