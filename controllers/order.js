@@ -235,6 +235,7 @@ async function handleEditOrder(req, res) {
       items,
       gstApplied,
       totalAmount: manualTotal,
+      paidAmount,
       extraCharges = 0,
       discount = 0,
     } = req.body;
@@ -304,7 +305,7 @@ async function handleEditOrder(req, res) {
         (order.discount || 0);
     }
 
-    const balanceAmount = finalTotal - order.paidAmount;
+    // const balanceAmount = finalTotal - order.paidAmount;
 
     /* ===============================
        4️⃣ SAVE ORDER
@@ -314,10 +315,26 @@ async function handleEditOrder(req, res) {
     order.gstAmount = gstAmount;
     order.gstPercent = gstApplied ? 18 : 0;
     order.totalAmount = finalTotal;
-    order.balanceAmount = balanceAmount;
+    // order.balanceAmount = balanceAmount;
+
+    // order.status =
+    //   balanceAmount <= 0
+    //     ? "paid"
+    //     : order.paidAmount > 0
+    //       ? "partial"
+    //       : "pending";
+
+    if (Number(paidAmount) > finalTotal) {
+      return res.status(400).json({
+        msg: "Paid amount cannot be greater than Total Amount",
+      });
+    }
+
+    order.paidAmount = Number(paidAmount);
+    order.balanceAmount = finalTotal - order.paidAmount;
 
     order.status =
-      balanceAmount <= 0
+      order.balanceAmount <= 0
         ? "paid"
         : order.paidAmount > 0
           ? "partial"
@@ -329,24 +346,109 @@ async function handleEditOrder(req, res) {
    5️⃣ ADJUST REVENUE IF NEEDED
 =============================== */
 
-    const oldTotalRevenue = await Revenue.aggregate([
+    // const difference = Number(paidAmount) - oldPaidAmount;
+
+    // if (difference > 0) {
+    //   await Revenue.create({
+    //     source: "order",
+    //     order: order._id,
+    //     amount: difference,
+    //   });
+
+    //   await Payment.create({
+    //     order: order._id,
+    //     customer: order.customer,
+    //     amount: difference,
+    //     paymentMode: "edit",
+    //   });
+    // }
+
+    // if (difference < 0) {
+    //   await Revenue.create({
+    //     source: "order",
+    //     order: order._id,
+    //     amount: difference, // negative value
+    //   });
+
+    //   await Payment.create({
+    //     order: order._id,
+    //     customer: order.customer,
+    //     amount: difference, // negative value
+    //     paymentMode: "edit",
+    //   });
+    // }
+
+    // const oldTotalRevenue = await Revenue.aggregate([
+    //   { $match: { order: order._id } },
+    //   { $group: { _id: null, total: { $sum: "$amount" } } },
+    // ]);
+
+    // const alreadyRecordedRevenue = oldTotalRevenue[0]?.total || 0;
+
+    // // If order is fully paid, revenue should match totalAmount
+    // if (order.status === "paid") {
+    //   const difference = order.totalAmount - alreadyRecordedRevenue;
+
+    //   if (difference !== 0) {
+    //     await Revenue.create({
+    //       source: "order",
+    //       order: order._id,
+    //       amount: difference,
+    //     });
+    //   }
+    // }
+
+    /* ===============================
+   5️⃣ ADJUST PAYMENT & REVENUE
+=============================== */
+
+    // Total revenue already recorded
+    const revenueAgg = await Revenue.aggregate([
       { $match: { order: order._id } },
-      { $group: { _id: null, total: { $sum: "$amount" } } },
+      {
+        $group: {
+          _id: null,
+          total: { $sum: "$amount" },
+        },
+      },
     ]);
 
-    const alreadyRecordedRevenue = oldTotalRevenue[0]?.total || 0;
+    const recordedRevenue = revenueAgg[0]?.total || 0;
 
-    // If order is fully paid, revenue should match totalAmount
-    if (order.status === "paid") {
-      const difference = order.totalAmount - alreadyRecordedRevenue;
+    // Total payments already recorded
+    const paymentAgg = await Payment.aggregate([
+      { $match: { order: order._id } },
+      {
+        $group: {
+          _id: null,
+          total: { $sum: "$amount" },
+        },
+      },
+    ]);
 
-      if (difference !== 0) {
-        await Revenue.create({
-          source: "order",
-          order: order._id,
-          amount: difference,
-        });
-      }
+    const recordedPayment = paymentAgg[0]?.total || 0;
+
+    // Revenue adjustment
+    const revenueDifference = order.paidAmount - recordedRevenue;
+
+    if (revenueDifference !== 0) {
+      await Revenue.create({
+        source: "order",
+        order: order._id,
+        amount: revenueDifference,
+      });
+    }
+
+    // Payment adjustment
+    const paymentDifference = order.paidAmount - recordedPayment;
+
+    if (paymentDifference !== 0) {
+      await Payment.create({
+        order: order._id,
+        customer: order.customer,
+        amount: paymentDifference,
+        paymentMode: "edit",
+      });
     }
 
     res.json(order);
