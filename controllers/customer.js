@@ -197,31 +197,71 @@ async function handleBulkUploadFromExcel(req, res) {
 /* =========================
    ADD / UPDATE WALLET
 ========================= */
+// async function handleUpdateWallet(req, res) {
+//   try {
+//     const { id } = req.params;
+//     const { amount, type } = req.body;
+
+//     if (!amount || amount <= 0) {
+//       return res.status(400).json({ msg: "Amount must be greater than 0" });
+//     }
+
+//     const customer = await Customer.findById(id);
+
+//     if (!customer) {
+//       return res.status(404).json({ msg: "Customer not found" });
+//     }
+
+//     if (type === "credit") {
+//       customer.walletBalance += amount;
+//     } else if (type === "debit") {
+//       if (customer.walletBalance < amount) {
+//         return res.status(400).json({ msg: "Insufficient balance" });
+//       }
+//       customer.walletBalance -= amount;
+//     } else {
+//       return res.status(400).json({ msg: "Invalid type" });
+//     }
+
+//     await customer.save();
+
+//     res.json({
+//       msg: "Wallet updated successfully",
+//       walletBalance: customer.walletBalance,
+//     });
+//   } catch (err) {
+//     res.status(500).json({ error: err.message });
+//   }
+// }
+
+/* =========================
+   UPDATE WALLET
+========================= */
 async function handleUpdateWallet(req, res) {
   try {
     const { id } = req.params;
-    const { amount, type } = req.body;
+    const { walletBalance } = req.body;
 
-    if (!amount || amount <= 0) {
-      return res.status(400).json({ msg: "Amount must be greater than 0" });
+    if (
+      walletBalance === undefined ||
+      isNaN(walletBalance) ||
+      Number(walletBalance) < 0
+    ) {
+      return res.status(400).json({
+        msg: "Invalid wallet balance",
+      });
     }
 
     const customer = await Customer.findById(id);
 
     if (!customer) {
-      return res.status(404).json({ msg: "Customer not found" });
+      return res.status(404).json({
+        msg: "Customer not found",
+      });
     }
 
-    if (type === "credit") {
-      customer.walletBalance += amount;
-    } else if (type === "debit") {
-      if (customer.walletBalance < amount) {
-        return res.status(400).json({ msg: "Insufficient balance" });
-      }
-      customer.walletBalance -= amount;
-    } else {
-      return res.status(400).json({ msg: "Invalid type" });
-    }
+    // customer.walletBalance = Number(walletBalance);
+    customer.walletBalance = Number(walletBalance.toFixed(2));
 
     await customer.save();
 
@@ -230,7 +270,9 @@ async function handleUpdateWallet(req, res) {
       walletBalance: customer.walletBalance,
     });
   } catch (err) {
-    res.status(500).json({ error: err.message });
+    res.status(500).json({
+      error: err.message,
+    });
   }
 }
 
